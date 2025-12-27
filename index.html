@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#0A84FF" />
+  <title>Water Bottle Tracker</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icon-180.png">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="title">
+      <div class="appname">Water</div>
+      <div class="subtitle" id="subtitle">Today</div>
+    </div>
+    <button class="ghost" id="settingsBtn" aria-label="Settings">⚙︎</button>
+  </header>
+
+  <main class="container">
+    <section class="card">
+      <div class="row between">
+        <div>
+          <div class="big" id="progressText">0 ml / 2000 ml</div>
+          <div class="muted" id="paceText">Just getting started</div>
+        </div>
+        <div class="ring">
+          <svg viewBox="0 0 120 120" width="86" height="86" aria-hidden="true">
+            <circle cx="60" cy="60" r="48" class="ring-bg"></circle>
+            <circle cx="60" cy="60" r="48" class="ring-fg" id="ringFg"></circle>
+          </svg>
+          <div class="ring-label" id="ringLabel">0%</div>
+        </div>
+      </div>
+      <div class="bar">
+        <div class="bar-fill" id="barFill"></div>
+      </div>
+    </section>
+
+    <section class="card dial-card">
+      <div class="row between">
+        <div>
+          <div class="h2">Current bottle</div>
+          <div class="muted" id="bottleMeta">500 ml • Bottle 1 of 4</div>
+        </div>
+        <button class="pill" id="undoBtn" disabled>Undo</button>
+      </div>
+
+      <div class="dial-layout">
+        <div class="bottle-wrap" aria-hidden="true">
+          <div class="bottle" id="bottle">
+            <div class="bottle-water" id="bottleWater"></div>
+            <div class="bottle-line" id="bottleLine"></div>
+          </div>
+        </div>
+
+        <div class="dial-wrap">
+          <div class="dial-readout">
+            <div class="dial-big" id="remainLabel">100% left</div>
+            <div class="muted" id="remainSub">0 ml consumed this bottle</div>
+          </div>
+
+          <div class="dial" id="dial" role="slider" aria-label="Bottle remaining" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100" tabindex="0">
+            <div class="dial-track"></div>
+            <div class="dial-ticks" id="dialTicks"></div>
+            <div class="dial-thumb" id="dialThumb"></div>
+          </div>
+
+          <div class="row gap">
+            <button class="btn" id="emptyBtn">Empty</button>
+            <button class="btn" id="fullBtn">Full</button>
+          </div>
+
+          <div class="hint" id="refillHint" hidden>
+            Level increased — did you refill?
+            <button class="link" id="refillBtn">Refill / New bottle</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="row between">
+        <div class="h2">Bottles today</div>
+        <div class="muted" id="bottlesCount">4</div>
+      </div>
+      <div class="bottles-row" id="bottlesRow"></div>
+      <div class="muted small" id="lastBottleNote"></div>
+    </section>
+
+    <section class="card">
+      <div class="h2">Quick add</div>
+      <div class="row gap wrap">
+        <button class="btn" data-add="250">+250 ml</button>
+        <button class="btn" data-add="500">+500 ml</button>
+        <button class="btn" id="addBottleBtn">+1 bottle</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="row between">
+        <div class="h2">Habit</div>
+        <div class="muted" id="streakLabel">Streak: 0</div>
+      </div>
+      <div class="muted">Counts a day if you log at least once.</div>
+      <div class="row gap wrap">
+        <button class="btn" id="resetTodayBtn">Reset today</button>
+        <button class="btn" id="exportBtn">Export data</button>
+      </div>
+    </section>
+  </main>
+
+  <!-- Settings sheet -->
+  <div class="sheet-backdrop" id="sheetBackdrop" hidden></div>
+  <div class="sheet" id="sheet" hidden role="dialog" aria-modal="true" aria-label="Settings">
+    <div class="sheet-head">
+      <div class="h2">Settings</div>
+      <button class="ghost" id="closeSheetBtn" aria-label="Close">✕</button>
+    </div>
+
+    <div class="sheet-body">
+      <div class="section">
+        <div class="h3">Daily goal</div>
+        <div class="row gap wrap">
+          <label class="field">
+            <div class="label">Goal (ml)</div>
+            <input id="goalInput" type="number" min="500" max="6000" step="50" inputmode="numeric" />
+          </label>
+          <label class="field">
+            <div class="label">Bottle (ml)</div>
+            <input id="bottleInput" type="number" min="100" max="2000" step="50" inputmode="numeric" />
+          </label>
+        </div>
+        <div class="row gap wrap">
+          <label class="field">
+            <div class="label">Bottle shape</div>
+            <select id="shapeSelect">
+              <option value="tall">Tall / slim</option>
+              <option value="standard">Standard</option>
+              <option value="wide">Wide</option>
+              <option value="tumbler">Tumbler</option>
+            </select>
+          </label>
+          <label class="field">
+            <div class="label">Dial snap</div>
+            <select id="snapSelect">
+              <option value="quarters">0/25/50/75/100</option>
+              <option value="tenths">Every 10%</option>
+              <option value="free">Smooth</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="h3">Goal calculator (optional)</div>
+        <div class="muted small">Simple “standard” estimate: ~33 ml/kg + activity + warm climate.</div>
+        <div class="row gap wrap">
+          <label class="field">
+            <div class="label">Weight (kg)</div>
+            <input id="weightInput" type="number" min="30" max="200" step="0.5" inputmode="decimal" />
+          </label>
+          <label class="field">
+            <div class="label">Activity</div>
+            <select id="activitySelect">
+              <option value="low">Low</option>
+              <option value="moderate" selected>Moderate</option>
+              <option value="high">High</option>
+            </select>
+          </label>
+          <label class="field">
+            <div class="label">Warm climate</div>
+            <select id="warmSelect">
+              <option value="no" selected>No</option>
+              <option value="yes">Yes</option>
+            </select>
+          </label>
+        </div>
+        <div class="row gap wrap">
+          <button class="btn" id="calcBtn">Calculate</button>
+          <button class="btn" id="useCalcBtn" disabled>Use recommendation</button>
+        </div>
+        <div class="muted" id="calcResult"></div>
+      </div>
+    </div>
+
+    <div class="sheet-foot">
+      <button class="btn primary" id="saveSettingsBtn">Save</button>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
