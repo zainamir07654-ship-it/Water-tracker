@@ -739,17 +739,32 @@ export default function WaterBottleTracker() {
                   />
                 </div>
               </div>
+
+              <div className="mt-6 flex gap-2">
+                <button
+                  onClick={() => setStep(0)}
+                  className="flex-1 px-4 py-4 rounded-2xl border border-white/15 bg-white/8 font-extrabold"
+                >
+                  Back
+                </button>
+                <button
+                  onClick={() => setStep(2)}
+                  className="flex-1 px-4 py-4 rounded-2xl bg-[#0A84FF] font-extrabold"
+                >
+                  Next
+                </button>
+              </div>
             </div>
 
             <div className="mt-6 flex gap-2">
               <button
-                onClick={() => setStep(0)}
+                onClick={() => setStep(1)}
                 className="flex-1 px-4 py-4 rounded-2xl border border-white/15 bg-white/8 font-extrabold"
               >
                 Back
               </button>
               <button
-                onClick={() => setStep(2)}
+                onClick={() => setStep(3)}
                 className="flex-1 px-4 py-4 rounded-2xl bg-[#0A84FF] font-extrabold"
               >
                 Next
