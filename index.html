@@ -21,19 +21,6 @@ function dayKey(d = new Date()) {
   return `${y}-${m}-${dd}`;
 }
 
-function prevDayKey(d = new Date()) {
-  const x = new Date(d);
-  x.setDate(x.getDate() - 1);
-  return dayKey(x);
-}
-
-function totalConsumedFromState(s) {
-  const n = ceilDiv(s.goalML, s.bottleML);
-  const completed = clamp(s.completedBottles, 0, n) * s.bottleML;
-  const consumedCurrent = Math.round((1 - s.remaining) * s.bottleML);
-  return Math.min(s.goalML, completed + consumedCurrent);
-}
-
 function msUntilNextMidnight(d = new Date()) {
   // Local midnight of the user's phone
   const next = new Date(d);
@@ -174,10 +161,6 @@ function makeDefaultState() {
     completedBottles: 0,
     remaining: 1, // 0..1 where 1 = full
 
-    // Daily summaries keyed by YYYY-MM-DD
-    // dailyLog["2025-12-27"] = { consumedML, goalML, bottleML, at }
-    dailyLog: {},
-
     // undo history
     history: [],
 
@@ -220,35 +203,7 @@ export default function WaterBottleTracker() {
       const today = dayKey();
       setState((s) => {
         if (s.dayKey === today) return s;
-
-        // Before we wipe the day, store the previous day's summary.
-        const prevKey = s.dayKey;
-        const consumed = totalConsumedFromState(s);
-        const nextLog = {
-          ...(s.dailyLog || {}),
-          [prevKey]: {
-            consumedML: consumed,
-            goalML: s.goalML,
-            bottleML: s.bottleML,
-            at: Date.now(),
-          },
-        };
-
-        // Keep only the most recent ~14 days (by key sort).
-        const keys = Object.keys(nextLog).sort();
-        const keep = keys.slice(-14);
-        const pruned = {};
-        for (const k of keep) pruned[k] = nextLog[k];
-
-        const next = {
-          ...s,
-          dailyLog: pruned,
-          dayKey: today,
-          completedBottles: 0,
-          remaining: 1,
-          history: [],
-          celebrate: null,
-        };
+        const next = { ...s, dayKey: today, completedBottles: 0, remaining: 1, history: [], celebrate: null };
         persistNow(next);
         return next;
       });
@@ -320,8 +275,11 @@ export default function WaterBottleTracker() {
   );
 
   const totalConsumed = useMemo(() => {
-    return totalConsumedFromState(state);
-  }, [state.completedBottles, state.remaining, state.bottleML, state.goalML]);
+    const n = bottlesNeededInt;
+    const completed = clamp(state.completedBottles, 0, n) * state.bottleML;
+    const consumedCurrent = Math.round((1 - state.remaining) * state.bottleML);
+    return Math.min(state.goalML, completed + consumedCurrent);
+  }, [state.completedBottles, state.remaining, state.bottleML, state.goalML, bottlesNeededInt]);
 
   const progressFrac = useMemo(() => (state.goalML > 0 ? Math.min(1, totalConsumed / state.goalML) : 0), [totalConsumed, state.goalML]);
 
@@ -544,19 +502,6 @@ export default function WaterBottleTracker() {
               </div>
               <div className="mt-1 text-xs text-white/50">
                 Resets in <span className="font-extrabold tabular-nums text-white/70">{formatCountdown(resetMs)}</span>
-              </div>
-              <div className="mt-1 text-xs text-white/50">
-                Yesterday:{" "}
-                {(() => {
-                  const y = (state.dailyLog || {})[prevDayKey()];
-                  if (!y) return <span className="text-white/40">—</span>;
-                  const pct = y.goalML > 0 ? Math.round((y.consumedML / y.goalML) * 100) : 0;
-                  return (
-                    <span className="font-extrabold tabular-nums text-white/70">
-                      {y.consumedML} / {y.goalML} ml ({pct}%)
-                    </span>
-                  );
-                })()}
               </div>
             </div>
             <button
