@@ -1,927 +1,899 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Water Bottle Tracker</title>
+import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 
-    <!-- Tailwind (CDN) -->
-    <script src="https://cdn.tailwindcss.com"></script>
+// Water Bottle Tracker — realistic onboarding + simple main UI (React + Tailwind)
+// Workflow:
+// 1) Welcome
+// 2) Intake questions (weight, activity, warm climate) -> recommended daily goal
+// 3) Bottle setup (shape + capacity)
+// 4) Summary (goal + bottles/day can be decimal)
+// 5) Main screen: bottle shape, title question, scroll wheel (dial), progress bar
 
-    <!-- React 18 + ReactDOM (UMD) -->
-    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+const STORAGE_KEY = "wbt_react_v2";
 
-    <!-- Babel (to run JSX in the browser) -->
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  </head>
+function clamp(n, a, b) {
+  return Math.max(a, Math.min(b, n));
+}
 
-  <body class="bg-[#0B0B0F] text-white">
-    <div id="root"></div>
+function dayKey(d = new Date()) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
+}
 
-    <script type="text/babel">
-      const { useEffect, useId, useMemo, useRef, useState } = React;
+function msUntilNextMidnight(d = new Date()) {
+  // Local midnight of the user's phone
+  const next = new Date(d);
+  next.setHours(24, 0, 0, 0); // next day's 00:00:00.000
+  return Math.max(0, next.getTime() - d.getTime());
+}
 
-      // Water Bottle Tracker — realistic onboarding + simple main UI (React + Tailwind)
-      // Workflow:
-      // 1) Welcome
-      // 2) Intake questions (weight, activity, warm climate) -> recommended daily goal
-      // 3) Bottle setup (shape + capacity)
-      // 4) Summary (goal + bottles/day can be decimal)
-      // 5) Main screen: bottle shape, title question, scroll wheel (dial), progress bar
+function formatCountdown(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${pad(h)}:${pad(m)}:${pad(s)}`;
+}
 
-      const STORAGE_KEY = "wbt_react_v2";
+function recommendGoalML({ weightKg, activity, warm }) {
+  // Simple, standard-feeling estimate: ~33 ml/kg + activity + warm climate
+  const base = weightKg * 33;
+  let ml = Math.round(base);
+  if (activity === "moderate") ml += 300;
+  if (activity === "high") ml += 600;
+  if (warm) ml += 300;
+  const low = Math.round(ml * 0.9);
+  const high = Math.round(ml * 1.1);
+  return { ml, low, high };
+}
 
-      function clamp(n, a, b) {
-        return Math.max(a, Math.min(b, n));
+function snapValue(v, snap) {
+  const clamped = clamp(v, 0, 1);
+  if (snap === "free") return clamped;
+  const step = snap === "tenths" ? 0.1 : 0.25;
+  return Math.round(clamped / step) * step;
+}
+
+function shapeClasses(shape) {
+  // kept for backwards compatibility; used for width sizing
+  switch (shape) {
+    case "tall":
+      return "w-[120px]";
+    case "wide":
+      return "w-[140px]";
+    case "tumbler":
+      return "w-[140px]";
+    default:
+      return "w-[120px]";
+  }
+}
+
+function bottlePath(shape) {
+  // ViewBox: 0 0 140 300
+  // These are simple vector silhouettes (not photoreal), but distinctly different.
+  switch (shape) {
+    case "tall":
+      // slim bottle with shoulders and small neck
+      return "M62 8 C56 10 54 18 54 26 L54 42 C43 48 38 61 38 75 L38 270 C38 286 49 294 70 294 C91 294 102 286 102 270 L102 75 C102 61 97 48 86 42 L86 26 C86 18 84 10 78 8 Z";
+    case "wide":
+      // wider bottle with rounded shoulders
+      return "M55 8 C50 10 48 18 48 26 L48 46 C38 54 32 68 32 85 L32 268 C32 286 48 294 70 294 C92 294 108 286 108 268 L108 85 C108 68 102 54 92 46 L92 26 C92 18 90 10 85 8 Z";
+    case "tumbler":
+      // tumbler / cup with lip
+      return "M40 18 C40 12 45 8 52 8 L88 8 C95 8 100 12 100 18 L100 30 C100 36 95 40 88 40 L86 40 L98 276 C99 289 88 294 70 294 C52 294 41 289 42 276 L54 40 L52 40 C45 40 40 36 40 30 Z";
+    default:
+      // standard bottle
+      return "M58 8 C53 10 51 18 51 26 L51 44 C41 52 36 65 36 80 L36 270 C36 286 49 294 70 294 C91 294 104 286 104 270 L104 80 C104 65 99 52 89 44 L89 26 C89 18 87 10 82 8 Z";
+  }
+}
+
+function BottleVector({ shape, level, className }) {
+  const id = useId();
+  const d = bottlePath(shape);
+  const pct = clamp(level, 0, 1);
+
+  // Fill rect (water)
+  const H = 300;
+  const W = 140;
+  const y = H - pct * H;
+
+  return (
+    <svg
+      viewBox="0 0 140 300"
+      className={`h-[300px] ${className || ""}`}
+      aria-hidden="true"
+    >
+      <defs>
+        <clipPath id={`clip-${id}`}>
+          <path d={d} />
+        </clipPath>
+      </defs>
+
+      {/* inside background */}
+      <g clipPath={`url(#clip-${id})`}>
+        <rect x="0" y="0" width={W} height={H} fill="rgba(255,255,255,0.03)" />
+        <rect x="0" y={y} width={W} height={pct * H} fill="rgba(10,132,255,0.35)" />
+        {/* water line */}
+        <rect x="10" y={Math.max(0, y - 2)} width={W - 20} height="2" fill="rgba(10,132,255,0.65)" />
+      </g>
+
+      {/* outline */}
+      <path d={d} fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="4" />
+      {/* subtle inner outline */}
+      <path d={d} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="1" />
+    </svg>
+  );
+}
+
+function formatBottlesDecimal(goalML, bottleML) {
+  if (!bottleML) return "0";
+  const v = goalML / bottleML;
+  // show up to 1 decimal, but hide trailing .0
+  const s = v.toFixed(1);
+  return s.endsWith(".0") ? s.slice(0, -2) : s;
+}
+
+function ceilDiv(a, b) {
+  return b <= 0 ? 0 : Math.ceil(a / b);
+}
+
+function makeDefaultState() {
+  return {
+    // onboarding
+    hasOnboarded: false,
+    step: 0, // 0 welcome, 1 intake, 2 bottle, 3 summary
+
+    // intake
+    weightKg: 70,
+    activity: "moderate", // low | moderate | high
+    warm: false,
+
+    // settings/results
+    goalML: 2000,
+    bottleML: 500,
+    shape: "standard", // tall | standard | wide | tumbler
+    snap: "quarters", // quarters | tenths | free
+
+    // daily tracking state
+    dayKey: dayKey(),
+    completedBottles: 0,
+    remaining: 1, // 0..1 where 1 = full
+
+    // undo history
+    history: [],
+
+    // celebration modal
+    celebrate: null, // { type: "bottle"|"goal", pct: number, consumedML: number }
+
+  };
+}
+
+export default function WaterBottleTracker() {
+  const [state, setState] = useState(() => {
+    const defaults = makeDefaultState();
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return defaults;
+      const parsed = JSON.parse(raw);
+      return { ...defaults, ...parsed };
+    } catch {
+      return defaults;
+    }
+  });
+
+  // Keep a live ref so we can do midnight resets + persist on iOS background/unload.
+  const stateRef = useRef(state);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  function persistNow(next) {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // ignore (Private Mode / storage restrictions)
+    }
+  }
+
+  // Day reset at the user's local midnight (00:00 on their phone)
+  useEffect(() => {
+    const resetToTodayIfNeeded = () => {
+      const today = dayKey();
+      setState((s) => {
+        if (s.dayKey === today) return s;
+        const next = { ...s, dayKey: today, completedBottles: 0, remaining: 1, history: [], celebrate: null };
+        persistNow(next);
+        return next;
+      });
+    };
+
+    // Run once on mount (covers Safari reloads)
+    resetToTodayIfNeeded();
+
+    // Schedule the next reset exactly after local midnight
+    let timeoutId;
+    const scheduleNext = () => {
+      const ms = msUntilNextMidnight();
+      timeoutId = window.setTimeout(() => {
+        resetToTodayIfNeeded();
+        scheduleNext();
+      }, ms + 50);
+    };
+    scheduleNext();
+
+    // If the user opens the app after midnight, ensure we reset immediately.
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") resetToTodayIfNeeded();
+      if (document.visibilityState === "hidden") {
+        // Save progress when iOS backgrounds the tab/PWA
+        persistNow(stateRef.current);
+      }
+    };
+
+    const onPageHide = () => {
+      persistNow(stateRef.current);
+    };
+
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", onPageHide);
+
+    return () => {
+      if (timeoutId) window.clearTimeout(timeoutId);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", onPageHide);
+    };
+  }, []);
+
+  // Persist
+  useEffect(() => {
+    persistNow(state);
+  }, [state]);
+
+  // Countdown to local midnight (shown in UI)
+  const [resetMs, setResetMs] = useState(() => msUntilNextMidnight());
+  useEffect(() => {
+    const tick = () => setResetMs(msUntilNextMidnight());
+    tick();
+    const id = window.setInterval(tick, 1000);
+    const onVis = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, []);
+
+  // Derived
+  const bottlesNeededInt = useMemo(() => ceilDiv(state.goalML, state.bottleML), [state.goalML, state.bottleML]);
+  const bottlesPerDayText = useMemo(
+    () => formatBottlesDecimal(state.goalML, state.bottleML),
+    [state.goalML, state.bottleML]
+  );
+
+  const totalConsumed = useMemo(() => {
+    const n = bottlesNeededInt;
+    const completed = clamp(state.completedBottles, 0, n) * state.bottleML;
+    const consumedCurrent = Math.round((1 - state.remaining) * state.bottleML);
+    return Math.min(state.goalML, completed + consumedCurrent);
+  }, [state.completedBottles, state.remaining, state.bottleML, state.goalML, bottlesNeededInt]);
+
+  const progressFrac = useMemo(() => (state.goalML > 0 ? Math.min(1, totalConsumed / state.goalML) : 0), [totalConsumed, state.goalML]);
+
+  // --- Tracking helpers (kept simple) ---
+  function pushHistory(entry) {
+    setState((s) => {
+      const next = { ...s, history: [...(s.history || []), entry] };
+      if (next.history.length > 50) next.history.shift();
+      return next;
+    });
+  }
+
+  function advanceBottle(s) {
+    const n = ceilDiv(s.goalML, s.bottleML);
+    if (n <= 0) return s;
+
+    let completed = s.completedBottles;
+    if (completed < n) completed += 1;
+
+    // After you finish a bottle, the next bottle should appear FULL (100%),
+    // even if you’ve already hit the daily goal.
+    return {
+      ...s,
+      completedBottles: completed,
+      remaining: 1,
+    };
+  }
+
+  function totalConsumedFor(ss) {
+    const n = ceilDiv(ss.goalML, ss.bottleML);
+    const completed = clamp(ss.completedBottles, 0, n) * ss.bottleML;
+    const consumedCurrent = Math.round((1 - ss.remaining) * ss.bottleML);
+    return Math.min(ss.goalML, completed + consumedCurrent);
+  }
+
+  function setRemaining(nextRemaining, meta = {}) {
+    setState((s) => {
+      const today = dayKey();
+      let ss = s;
+      if (ss.dayKey !== today) ss = { ...ss, dayKey: today, completedBottles: 0, remaining: 1, history: [], celebrate: null };
+
+      const prev = ss.remaining;
+      const prevCompleted = ss.completedBottles;
+      const r = clamp(nextRemaining, 0, 1);
+      const entry = { t: Date.now(), prevRemaining: prev, prevCompleted, ...meta };
+      const history = [...(ss.history || []), entry].slice(-50);
+
+      const didEmptyBottle = meta.action === "track" && prev > 0.0001 && r <= 0.0001;
+
+      // Apply remaining, then auto-advance when empty
+      let nextState = { ...ss, remaining: r, history };
+      if (r <= 0.0001) {
+        nextState = { ...advanceBottle(nextState), history };
       }
 
-      function dayKey(d = new Date()) {
-        const y = d.getFullYear();
-        const m = String(d.getMonth() + 1).padStart(2, "0");
-        const dd = String(d.getDate()).padStart(2, "0");
-        return `${y}-${m}-${dd}`;
-      }
+      const afterConsumed = totalConsumedFor(nextState);
+      const pct = nextState.goalML > 0 ? Math.round((afterConsumed / nextState.goalML) * 100) : 0;
+      const hitGoal = meta.action === "track" && nextState.goalML > 0 && afterConsumed >= nextState.goalML;
 
-      function msUntilNextMidnight(d = new Date()) {
-        // Local midnight of the user's phone
-        const next = new Date(d);
-        next.setHours(24, 0, 0, 0); // next day's 00:00:00.000
-        return Math.max(0, next.getTime() - d.getTime());
-      }
-
-      function formatCountdown(ms) {
-        const total = Math.max(0, Math.floor(ms / 1000));
-        const h = Math.floor(total / 3600);
-        const m = Math.floor((total % 3600) / 60);
-        const s = total % 60;
-        const pad = (n) => String(n).padStart(2, "0");
-        return `${pad(h)}:${pad(m)}:${pad(s)}`;
-      }
-
-      function recommendGoalML({ weightKg, activity, warm }) {
-        // Simple, standard-feeling estimate: ~33 ml/kg + activity + warm climate
-        const base = weightKg * 33;
-        let ml = Math.round(base);
-        if (activity === "moderate") ml += 300;
-        if (activity === "high") ml += 600;
-        if (warm) ml += 300;
-        const low = Math.round(ml * 0.9);
-        const high = Math.round(ml * 1.1);
-        return { ml, low, high };
-      }
-
-      function snapValue(v, snap) {
-        const clamped = clamp(v, 0, 1);
-        if (snap === "free") return clamped;
-        const step = snap === "tenths" ? 0.1 : 0.25;
-        return Math.round(clamped / step) * step;
-      }
-
-      function shapeClasses(shape) {
-        // kept for backwards compatibility; used for width sizing
-        switch (shape) {
-          case "tall":
-            return "w-[120px]";
-          case "wide":
-            return "w-[140px]";
-          case "tumbler":
-            return "w-[140px]";
-          default:
-            return "w-[120px]";
-        }
-      }
-
-      function bottlePath(shape) {
-        // ViewBox: 0 0 140 300
-        // These are simple vector silhouettes (not photoreal), but distinctly different.
-        switch (shape) {
-          case "tall":
-            // slim bottle with shoulders and small neck
-            return "M62 8 C56 10 54 18 54 26 L54 42 C43 48 38 61 38 75 L38 270 C38 286 49 294 70 294 C91 294 102 286 102 270 L102 75 C102 61 97 48 86 42 L86 26 C86 18 84 10 78 8 Z";
-          case "wide":
-            // wider bottle with rounded shoulders
-            return "M55 8 C50 10 48 18 48 26 L48 46 C38 54 32 68 32 85 L32 268 C32 286 48 294 70 294 C92 294 108 286 108 268 L108 85 C108 68 102 54 92 46 L92 26 C92 18 90 10 85 8 Z";
-          case "tumbler":
-            // tumbler / cup with lip
-            return "M40 18 C40 12 45 8 52 8 L88 8 C95 8 100 12 100 18 L100 30 C100 36 95 40 88 40 L86 40 L98 276 C99 289 88 294 70 294 C52 294 41 289 42 276 L54 40 L52 40 C45 40 40 36 40 30 Z";
-          default:
-            // standard bottle
-            return "M58 8 C53 10 51 18 51 26 L51 44 C41 52 36 65 36 80 L36 270 C36 286 49 294 70 294 C91 294 104 286 104 270 L104 80 C104 65 99 52 89 44 L89 26 C89 18 87 10 82 8 Z";
-        }
-      }
-
-      function BottleVector({ shape, level, className }) {
-        const id = useId();
-        const d = bottlePath(shape);
-        const pct = clamp(level, 0, 1);
-
-        // Fill rect (water)
-        const H = 300;
-        const W = 140;
-        const y = H - pct * H;
-
-        return (
-          <svg viewBox="0 0 140 300" className={`h-[300px] ${className || ""}`} aria-hidden="true">
-            <defs>
-              <clipPath id={`clip-${id}`}>
-                <path d={d} />
-              </clipPath>
-            </defs>
-
-            {/* inside background */}
-            <g clipPath={`url(#clip-${id})`}>
-              <rect x="0" y="0" width={W} height={H} fill="rgba(255,255,255,0.03)" />
-              <rect x="0" y={y} width={W} height={pct * H} fill="rgba(10,132,255,0.35)" />
-              {/* water line */}
-              <rect
-                x="10"
-                y={Math.max(0, y - 2)}
-                width={W - 20}
-                height="2"
-                fill="rgba(10,132,255,0.65)"
-              />
-            </g>
-
-            {/* outline */}
-            <path d={d} fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="4" />
-            {/* subtle inner outline */}
-            <path d={d} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="1" />
-          </svg>
-        );
-      }
-
-      function formatBottlesDecimal(goalML, bottleML) {
-        if (!bottleML) return "0";
-        const v = goalML / bottleML;
-        // show up to 1 decimal, but hide trailing .0
-        const s = v.toFixed(1);
-        return s.endsWith(".0") ? s.slice(0, -2) : s;
-      }
-
-      function ceilDiv(a, b) {
-        return b <= 0 ? 0 : Math.ceil(a / b);
-      }
-
-      function makeDefaultState() {
-        return {
-          // onboarding
-          hasOnboarded: false,
-          step: 0, // 0 welcome, 1 intake, 2 bottle, 3 summary
-
-          // intake
-          weightKg: 70,
-          activity: "moderate", // low | moderate | high
-          warm: false,
-
-          // settings/results
-          goalML: 2000,
-          bottleML: 500,
-          shape: "standard", // tall | standard | wide | tumbler
-          snap: "quarters", // quarters | tenths | free
-
-          // daily tracking state
-          dayKey: dayKey(),
-          completedBottles: 0,
-          remaining: 1, // 0..1 where 1 = full
-
-          // undo history
-          history: [],
-
-          // celebration modal
-          celebrate: null, // { type: "bottle"|"goal", pct: number, consumedML: number }
+      // Celebration screen triggers only on Track
+      if (meta.action === "track" && (hitGoal || didEmptyBottle)) {
+        nextState = {
+          ...nextState,
+          celebrate: {
+            type: hitGoal ? "goal" : "bottle",
+            pct: clamp(pct, 0, 100),
+            consumedML: afterConsumed,
+          },
         };
       }
 
-      function WaterBottleTracker() {
-        const [state, setState] = useState(() => {
-          const defaults = makeDefaultState();
-          try {
-            const raw = localStorage.getItem(STORAGE_KEY);
-            if (!raw) return defaults;
-            const parsed = JSON.parse(raw);
-            return { ...defaults, ...parsed };
-          } catch {
-            return defaults;
-          }
-        });
+      return nextState;
+    });
+  }
 
-        // Keep a live ref so we can do midnight resets + persist on iOS background/unload.
-        const stateRef = useRef(state);
-        useEffect(() => {
-          stateRef.current = state;
-        }, [state]);
+  function undo() {
+    setState((s) => {
+      const h = s.history || [];
+      if (h.length === 0) return s;
+      const last = h[h.length - 1];
+      return {
+        ...s,
+        remaining: last.prevRemaining,
+        completedBottles: last.prevCompleted,
+        history: h.slice(0, -1),
+      };
+    });
+  }
 
-        function persistNow(next) {
-          try {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-          } catch {
-            // ignore (Private Mode / storage restrictions)
-          }
-        }
+  // --- Dial (scroll wheel) ---
+  const dialRef = useRef(null);
+  const [dragging, setDragging] = useState(false);
 
-        // Day reset at the user's local midnight (00:00 on their phone)
-        useEffect(() => {
-          const resetToTodayIfNeeded = () => {
-            const today = dayKey();
-            setState((s) => {
-              if (s.dayKey === today) return s;
-              const next = {
-                ...s,
-                dayKey: today,
-                completedBottles: 0,
-                remaining: 1,
-                history: [],
-                celebrate: null,
-              };
-              persistNow(next);
-              return next;
-            });
-          };
+  // Main-screen "pending" level (dial changes this; Track commits it)
+  const [pendingRemaining, setPendingRemaining] = useState(state.remaining);
 
-          // Run once on mount (covers Safari reloads)
-          resetToTodayIfNeeded();
+  useEffect(() => {
+    if (state.hasOnboarded) setPendingRemaining(state.remaining);
+  }, [state.remaining, state.hasOnboarded]);
 
-          // Schedule the next reset exactly after local midnight
-          let timeoutId;
-          const scheduleNext = () => {
-            const ms = msUntilNextMidnight();
-            timeoutId = window.setTimeout(() => {
-              resetToTodayIfNeeded();
-              scheduleNext();
-            }, ms + 50);
-          };
-          scheduleNext();
+  function dialValueFromClientY(clientY) {
+    const el = dialRef.current;
+    if (!el) return state.remaining;
+    const rect = el.getBoundingClientRect();
+    const padTop = 10;
+    const padBot = 10;
+    const y = clamp(clientY, rect.top + padTop, rect.bottom - padBot);
+    const usable = rect.height - padTop - padBot;
+    const ratio = 1 - (y - (rect.top + padTop)) / usable;
+    return snapValue(ratio, state.snap);
+  }
 
-          // If the user opens the app after midnight, ensure we reset immediately.
-          const onVisibility = () => {
-            if (document.visibilityState === "visible") resetToTodayIfNeeded();
-            if (document.visibilityState === "hidden") {
-              // Save progress when iOS backgrounds the tab/PWA
-              persistNow(stateRef.current);
-            }
-          };
+  function onDialPointerDown(e) {
+    e.preventDefault();
+    setDragging(true);
+    const v = dialValueFromClientY(e.clientY);
+    setPendingRemaining(v);
+  }
 
-          const onPageHide = () => {
-            persistNow(stateRef.current);
-          };
+  function onDialPointerMove(e) {
+    if (!dragging) return;
+    const v = dialValueFromClientY(e.clientY);
+    setPendingRemaining(v);
+  }
 
-          document.addEventListener("visibilitychange", onVisibility);
-          window.addEventListener("pagehide", onPageHide);
+  function onDialPointerUp() {
+    setDragging(false);
+  }
 
-          return () => {
-            if (timeoutId) window.clearTimeout(timeoutId);
-            document.removeEventListener("visibilitychange", onVisibility);
-            window.removeEventListener("pagehide", onPageHide);
-          };
-        }, []);
+  useEffect(() => {
+    window.addEventListener("pointermove", onDialPointerMove);
+    window.addEventListener("pointerup", onDialPointerUp);
+    return () => {
+      window.removeEventListener("pointermove", onDialPointerMove);
+      window.removeEventListener("pointerup", onDialPointerUp);
+    };
+  });
 
-        // Persist
-        useEffect(() => {
-          persistNow(state);
-        }, [state]);
+  const remainingPct = Math.round(pendingRemaining * 100);
 
-        // Countdown to local midnight (shown in UI)
-        const [resetMs, setResetMs] = useState(() => msUntilNextMidnight());
-        useEffect(() => {
-          const tick = () => setResetMs(msUntilNextMidnight());
-          tick();
-          const id = window.setInterval(tick, 1000);
-          const onVis = () => {
-            if (document.visibilityState === "visible") tick();
-          };
-          document.addEventListener("visibilitychange", onVis);
-          return () => {
-            window.clearInterval(id);
-            document.removeEventListener("visibilitychange", onVis);
-          };
-        }, []);
+  const dialThumbTop = useMemo(() => {
+    // fixed dial height in UI
+    const H = 260;
+    const padTop = 10;
+    const padBot = 10;
+    const usable = H - padTop - padBot;
+    return padTop + (1 - pendingRemaining) * usable;
+  }, [pendingRemaining]);
 
-        // Derived
-        const bottlesNeededInt = useMemo(
-          () => ceilDiv(state.goalML, state.bottleML),
-          [state.goalML, state.bottleML]
-        );
-        const bottlesPerDayText = useMemo(
-          () => formatBottlesDecimal(state.goalML, state.bottleML),
-          [state.goalML, state.bottleML]
-        );
+  // --- Onboarding screens ---
+  function setStep(step) {
+    setState((s) => ({ ...s, step }));
+  }
 
-        const totalConsumed = useMemo(() => {
-          const n = bottlesNeededInt;
-          const completed = clamp(state.completedBottles, 0, n) * state.bottleML;
-          const consumedCurrent = Math.round((1 - state.remaining) * state.bottleML);
-          return Math.min(state.goalML, completed + consumedCurrent);
-        }, [state.completedBottles, state.remaining, state.bottleML, state.goalML, bottlesNeededInt]);
+  function applyRecommendation() {
+    const rec = recommendGoalML({ weightKg: Number(state.weightKg), activity: state.activity, warm: state.warm });
+    setState((s) => ({ ...s, goalML: rec.ml }));
+  }
 
-        const progressFrac = useMemo(
-          () => (state.goalML > 0 ? Math.min(1, totalConsumed / state.goalML) : 0),
-          [totalConsumed, state.goalML]
-        );
+  const rec = useMemo(() => {
+    if (!state.weightKg || state.weightKg < 30) return null;
+    return recommendGoalML({ weightKg: Number(state.weightKg), activity: state.activity, warm: state.warm });
+  }, [state.weightKg, state.activity, state.warm]);
 
-        // --- Tracking helpers (kept simple) ---
-        function advanceBottle(s) {
-          const n = ceilDiv(s.goalML, s.bottleML);
-          if (n <= 0) return s;
+  function finishOnboarding() {
+    setState((s) => ({ ...s, hasOnboarded: true, step: 0 }));
+  }
 
-          let completed = s.completedBottles;
-          if (completed < n) completed += 1;
+  // --- Main screen (minimal UI) ---
+  if (state.hasOnboarded) {
+    return (
+      <div className="min-h-screen bg-[#0B0B0F] text-white">
+        {/* Celebration overlay */}
+        {state.celebrate && (
+          <div className="fixed inset-0 z-50">
+            <div className="absolute inset-0 bg-black/70 backdrop-blur" />
+            <div className="absolute inset-0 flex items-center justify-center px-5">
+              <div className="w-full max-w-md rounded-3xl border border-white/10 bg-[#121218]/95 p-6 shadow-[0_20px_60px_rgba(0,0,0,.55)]">
+                <div className="text-2xl font-extrabold">
+                  {state.celebrate.type === "goal" ? "Well done" : "Good job"}
+                </div>
 
-          // After you finish a bottle, the next bottle should appear FULL (100%),
-          // even if you’ve already hit the daily goal.
-          return {
-            ...s,
-            completedBottles: completed,
-            remaining: 1,
-          };
-        }
+                <div className="mt-2 text-white/75">
+                  {state.celebrate.type === "goal"
+                    ? "You hit your water intake for the day."
+                    : `You’ve drunk ${state.celebrate.pct}% of your water intake today.`}
+                </div>
 
-        function totalConsumedFor(ss) {
-          const n = ceilDiv(ss.goalML, ss.bottleML);
-          const completed = clamp(ss.completedBottles, 0, n) * ss.bottleML;
-          const consumedCurrent = Math.round((1 - ss.remaining) * ss.bottleML);
-          return Math.min(ss.goalML, completed + consumedCurrent);
-        }
-
-        function setRemaining(nextRemaining, meta = {}) {
-          setState((s) => {
-            const today = dayKey();
-            let ss = s;
-            if (ss.dayKey !== today)
-              ss = { ...ss, dayKey: today, completedBottles: 0, remaining: 1, history: [], celebrate: null };
-
-            const prev = ss.remaining;
-            const prevCompleted = ss.completedBottles;
-            const r = clamp(nextRemaining, 0, 1);
-            const entry = { t: Date.now(), prevRemaining: prev, prevCompleted, ...meta };
-            const history = [...(ss.history || []), entry].slice(-50);
-
-            const didEmptyBottle = meta.action === "track" && prev > 0.0001 && r <= 0.0001;
-
-            // Apply remaining, then auto-advance when empty
-            let nextState = { ...ss, remaining: r, history };
-            if (r <= 0.0001) {
-              nextState = { ...advanceBottle(nextState), history };
-            }
-
-            const afterConsumed = totalConsumedFor(nextState);
-            const pct = nextState.goalML > 0 ? Math.round((afterConsumed / nextState.goalML) * 100) : 0;
-            const hitGoal = meta.action === "track" && nextState.goalML > 0 && afterConsumed >= nextState.goalML;
-
-            // Celebration screen triggers only on Track
-            if (meta.action === "track" && (hitGoal || didEmptyBottle)) {
-              nextState = {
-                ...nextState,
-                celebrate: {
-                  type: hitGoal ? "goal" : "bottle",
-                  pct: clamp(pct, 0, 100),
-                  consumedML: afterConsumed,
-                },
-              };
-            }
-
-            return nextState;
-          });
-        }
-
-        function undo() {
-          setState((s) => {
-            const h = s.history || [];
-            if (h.length === 0) return s;
-            const last = h[h.length - 1];
-            return {
-              ...s,
-              remaining: last.prevRemaining,
-              completedBottles: last.prevCompleted,
-              history: h.slice(0, -1),
-            };
-          });
-        }
-
-        // --- Dial (scroll wheel) ---
-        const dialRef = useRef(null);
-        const [dragging, setDragging] = useState(false);
-
-        // Main-screen "pending" level (dial changes this; Track commits it)
-        const [pendingRemaining, setPendingRemaining] = useState(state.remaining);
-
-        useEffect(() => {
-          if (state.hasOnboarded) setPendingRemaining(state.remaining);
-        }, [state.remaining, state.hasOnboarded]);
-
-        function dialValueFromClientY(clientY) {
-          const el = dialRef.current;
-          if (!el) return state.remaining;
-          const rect = el.getBoundingClientRect();
-          const padTop = 10;
-          const padBot = 10;
-          const y = clamp(clientY, rect.top + padTop, rect.bottom - padBot);
-          const usable = rect.height - padTop - padBot;
-          const ratio = 1 - (y - (rect.top + padTop)) / usable;
-          return snapValue(ratio, state.snap);
-        }
-
-        function onDialPointerDown(e) {
-          e.preventDefault();
-          setDragging(true);
-          const v = dialValueFromClientY(e.clientY);
-          setPendingRemaining(v);
-        }
-
-        function onDialPointerMove(e) {
-          if (!dragging) return;
-          const v = dialValueFromClientY(e.clientY);
-          setPendingRemaining(v);
-        }
-
-        function onDialPointerUp() {
-          setDragging(false);
-        }
-
-        useEffect(() => {
-          window.addEventListener("pointermove", onDialPointerMove);
-          window.addEventListener("pointerup", onDialPointerUp);
-          return () => {
-            window.removeEventListener("pointermove", onDialPointerMove);
-            window.removeEventListener("pointerup", onDialPointerUp);
-          };
-        });
-
-        const remainingPct = Math.round(pendingRemaining * 100);
-
-        const dialThumbTop = useMemo(() => {
-          // fixed dial height in UI
-          const H = 260;
-          const padTop = 10;
-          const padBot = 10;
-          const usable = H - padTop - padBot;
-          return padTop + (1 - pendingRemaining) * usable;
-        }, [pendingRemaining]);
-
-        // --- Onboarding screens ---
-        function setStep(step) {
-          setState((s) => ({ ...s, step }));
-        }
-
-        function applyRecommendation() {
-          const rec = recommendGoalML({
-            weightKg: Number(state.weightKg),
-            activity: state.activity,
-            warm: state.warm,
-          });
-          setState((s) => ({ ...s, goalML: rec.ml }));
-        }
-
-        const rec = useMemo(() => {
-          if (!state.weightKg || state.weightKg < 30) return null;
-          return recommendGoalML({
-            weightKg: Number(state.weightKg),
-            activity: state.activity,
-            warm: state.warm,
-          });
-        }, [state.weightKg, state.activity, state.warm]);
-
-        // --- Main screen ---
-        if (state.hasOnboarded) {
-          return (
-            <div className="min-h-screen bg-[#0B0B0F] text-white">
-              {/* Celebration overlay */}
-              {state.celebrate && (
-                <div className="fixed inset-0 z-50">
-                  <div className="absolute inset-0 bg-black/70 backdrop-blur" />
-                  <div className="absolute inset-0 flex items-center justify-center px-5">
-                    <div className="w-full max-w-md rounded-3xl border border-white/10 bg-[#121218]/95 p-6 shadow-[0_20px_60px_rgba(0,0,0,.55)]">
-                      <div className="text-2xl font-extrabold">
-                        {state.celebrate.type === "goal" ? "Well done" : "Good job"}
-                      </div>
-
-                      <div className="mt-2 text-white/75">
-                        {state.celebrate.type === "goal"
-                          ? "You hit your water intake for the day."
-                          : `You’ve drunk ${state.celebrate.pct}% of your water intake today.`}
-                      </div>
-
-                      <div className="mt-5 rounded-2xl border border-white/10 bg-white/5 p-4">
-                        <div className="text-xs text-white/60">Today</div>
-                        <div className="mt-1 text-xl font-extrabold tabular-nums">
-                          {state.celebrate.consumedML} / {state.goalML} ml
-                        </div>
-                        <div className="mt-1 text-sm text-white/70">
-                          {state.celebrate.type === "goal" ? "100% complete ✅" : `${state.celebrate.pct}% complete`}
-                        </div>
-                      </div>
-
-                      <button
-                        onClick={() => setState((s) => ({ ...s, celebrate: null }))}
-                        className={
-                          "mt-6 w-full px-5 py-4 rounded-2xl font-extrabold active:scale-[0.99] " +
-                          (state.celebrate.type === "goal"
-                            ? "bg-green-500 text-black"
-                            : "bg-[#0A84FF] text-white")
-                        }
-                      >
-                        {state.celebrate.type === "goal" ? "Done" : "Continue"}
-                      </button>
-                    </div>
+                <div className="mt-5 rounded-2xl border border-white/10 bg-white/5 p-4">
+                  <div className="text-xs text-white/60">Today</div>
+                  <div className="mt-1 text-xl font-extrabold tabular-nums">
+                    {state.celebrate.consumedML} / {state.goalML} ml
+                  </div>
+                  <div className="mt-1 text-sm text-white/70">
+                    {state.celebrate.type === "goal" ? "100% complete ✅" : `${state.celebrate.pct}% complete`}
                   </div>
                 </div>
-              )}
 
-              {/* top area */}
-              <div className="px-5 pt-7 pb-5">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="text-2xl font-extrabold leading-tight">How much water is in your bottle?</div>
-                    <div className="mt-2 text-sm text-white/60">
-                      Goal {state.goalML} ml • Bottle {state.bottleML} ml • {bottlesPerDayText} bottle(s)/day
-                    </div>
-                    <div className="mt-1 text-xs text-white/50">
-                      Resets in{" "}
-                      <span className="font-extrabold tabular-nums text-white/70">
-                        {formatCountdown(resetMs)}
-                      </span>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => setState((s) => ({ ...s, hasOnboarded: false, step: 3 }))}
-                    className="h-10 w-10 rounded-2xl border border-white/12 bg-white/8 active:bg-white/12 flex items-center justify-center"
-                    aria-label="Edit setup"
-                    title="Edit setup"
-                  >
-                    ⚙︎
-                  </button>
-                </div>
+                <button
+                  onClick={() => setState((s) => ({ ...s, celebrate: null }))}
+                  className={
+                    "mt-6 w-full px-5 py-4 rounded-2xl font-extrabold active:scale-[0.99] " +
+                    (state.celebrate.type === "goal" ? "bg-green-500 text-black" : "bg-[#0A84FF] text-white")
+                  }
+                >
+                  {state.celebrate.type === "goal" ? "Done" : "Continue"}
+                </button>
               </div>
-
-              {/* core interaction */}
-              <div className="px-5">
-                <div className="flex items-center justify-center gap-6">
-                  {/* bottle (vector) */}
-                  <BottleVector shape={state.shape} level={pendingRemaining} className={shapeClasses(state.shape)} />
-
-                  {/* scroll wheel dial */}
-                  <div className="flex flex-col items-center gap-3">
-                    <div className="text-lg font-extrabold tabular-nums">{remainingPct}%</div>
-                    <div
-                      ref={dialRef}
-                      onPointerDown={onDialPointerDown}
-                      className="relative h-[260px] w-16 rounded-2xl border border-white/15 bg-white/6 overflow-hidden select-none touch-none"
-                      role="slider"
-                      aria-label="Bottle level"
-                      aria-valuemin={0}
-                      aria-valuemax={100}
-                      aria-valuenow={remainingPct}
-                      tabIndex={0}
-                      onKeyDown={(e) => {
-                        const step = state.snap === "tenths" ? 0.1 : state.snap === "free" ? 0.01 : 0.25;
-                        if (e.key === "ArrowUp") {
-                          e.preventDefault();
-                          setPendingRemaining((p) => snapValue(p + step, state.snap));
-                        }
-                        if (e.key === "ArrowDown") {
-                          e.preventDefault();
-                          setPendingRemaining((p) => snapValue(p - step, state.snap));
-                        }
-                      }}
-                    >
-                      <div className="absolute inset-y-2 left-[18px] right-[18px] rounded-xl bg-white/8" />
-                      <div className="absolute inset-y-2 left-0 right-0 flex flex-col justify-between pointer-events-none">
-                        {Array.from({ length: 21 }).map((_, i) => {
-                          const major = i % 5 === 0;
-                          return (
-                            <div key={i} className="flex justify-center">
-                              <span className={`block h-px ${major ? "w-8 bg-white/45" : "w-[22px] bg-white/25"}`} />
-                            </div>
-                          );
-                        })}
-                      </div>
-                      <div
-                        className="absolute left-1/2 h-[6px] w-[38px] -translate-x-1/2 rounded-full bg-white/90"
-                        style={{ top: `${dialThumbTop}px` }}
-                      />
-                    </div>
-
-                    <button
-                      onClick={undo}
-                      disabled={!state.history || state.history.length === 0}
-                      className="px-4 py-2 rounded-2xl border border-white/15 bg-white/8 font-extrabold disabled:opacity-40"
-                    >
-                      Undo
-                    </button>
-                  </div>
-                </div>
-
-                {/* Track button */}
-                <div className="mt-5 flex justify-center">
-                  <button
-                    onClick={() => {
-                      const wasEmpty = pendingRemaining <= 0.0001;
-                      setRemaining(pendingRemaining, { action: "track" });
-                      // Make the UI feel instant: once you finish a bottle, show a fresh full bottle.
-                      if (wasEmpty) setPendingRemaining(1);
-                    }}
-                    disabled={Math.abs(pendingRemaining - state.remaining) < 1e-6}
-                    className={
-                      "w-full max-w-md px-5 py-4 rounded-2xl font-extrabold active:scale-[0.99] transition " +
-                      (Math.abs(pendingRemaining - state.remaining) < 1e-6
-                        ? "bg-white/10 text-white/40 border border-white/10"
-                        : "bg-green-500 text-black")
-                    }
-                  >
-                    Track
-                  </button>
-                </div>
-
-                {/* progress bar */}
-                <div className="mt-8">
-                  <div className="flex items-end justify-between">
-                    <div className="text-sm text-white/70">Daily progress</div>
-                    <div className="text-sm font-extrabold tabular-nums">
-                      {totalConsumed} / {state.goalML} ml
-                    </div>
-                  </div>
-                  <div className="mt-2 h-3 rounded-full bg-white/10 overflow-hidden">
-                    <div
-                      className="h-full rounded-full bg-[#0A84FF]"
-                      style={{ width: `${Math.round(progressFrac * 100)}%`, transition: "width .15s ease" }}
-                    />
-                  </div>
-                  <div className="mt-2 text-xs text-white/55">
-                    Tip: scroll down to 0% when you finish the bottle — it will auto-start the next one.
-                  </div>
-                </div>
-              </div>
-            </div>
-          );
-        }
-
-        // Onboarding container
-        return (
-          <div className="min-h-screen bg-[#0B0B0F] text-white">
-            <div className="max-w-xl mx-auto px-5 pt-8 pb-10">
-              {/* Welcome */}
-              {state.step === 0 && (
-                <div>
-                  <div className="text-3xl font-extrabold leading-tight">Welcome</div>
-                  <div className="mt-3 text-white/70">
-                    We’ll set your daily water target, then your bottle, so logging is one quick scroll.
-                  </div>
-
-                  <div className="mt-8 rounded-3xl border border-white/10 bg-white/6 p-5">
-                    <div className="text-sm text-white/70">What you’ll do</div>
-                    <ul className="mt-3 space-y-2 text-white/85">
-                      <li>• Answer a few questions to estimate your daily intake</li>
-                      <li>• Tell us your bottle size + shape</li>
-                      <li>• Log bottle level with a single scroll</li>
-                    </ul>
-                  </div>
-
-                  <button
-                    onClick={() => setStep(1)}
-                    className="mt-8 w-full px-4 py-4 rounded-2xl bg-[#0A84FF] font-extrabold"
-                  >
-                    Get started
-                  </button>
-                </div>
-              )}
-
-              {/* Intake questions */}
-              {state.step === 1 && (
-                <div>
-                  <div className="text-2xl font-extrabold">Your daily water target</div>
-                  <div className="mt-2 text-white/70">Answer a few questions — you can edit later.</div>
-
-                  <div className="mt-6 rounded-3xl border border-white/10 bg-white/6 p-5">
-                    <label className="block">
-                      <div className="text-xs text-white/65">Weight (kg)</div>
-                      <input
-                        className="mt-1 w-full px-4 py-3 rounded-2xl border border-white/15 bg-white/5 font-extrabold outline-none"
-                        type="number"
-                        min={30}
-                        max={200}
-                        step={0.5}
-                        value={state.weightKg}
-                        onChange={(e) => setState((s) => ({ ...s, weightKg: Number(e.target.value || 70) }))}
-                      />
-                    </label>
-
-                    <div className="mt-4">
-                      <div className="text-xs text-white/65">Activity</div>
-                      <div className="mt-2 grid grid-cols-3 gap-2">
-                        {[
-                          { k: "low", t: "Low" },
-                          { k: "moderate", t: "Moderate" },
-                          { k: "high", t: "High" },
-                        ].map((x) => (
-                          <button
-                            key={x.k}
-                            onClick={() => setState((s) => ({ ...s, activity: x.k }))}
-                            className={
-                              "px-3 py-3 rounded-2xl border font-extrabold " +
-                              (state.activity === x.k
-                                ? "border-[#0A84FF]/60 bg-[#0A84FF]/20"
-                                : "border-white/15 bg-white/5")
-                            }
-                          >
-                            {x.t}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="mt-4 flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
-                      <div>
-                        <div className="font-extrabold">Warm climate / sweaty day</div>
-                        <div className="text-xs text-white/60">Adds a small buffer to the estimate</div>
-                      </div>
-                      <button
-                        onClick={() => setState((s) => ({ ...s, warm: !s.warm }))}
-                        className={"h-8 w-14 rounded-full p-1 transition " + (state.warm ? "bg-[#0A84FF]" : "bg-white/15")}
-                        aria-label="Toggle warm climate"
-                      >
-                        <div className={"h-6 w-6 rounded-full bg-white transition " + (state.warm ? "translate-x-6" : "translate-x-0")} />
-                      </button>
-                    </div>
-
-                    <div className="mt-5 rounded-2xl border border-white/10 bg-white/5 p-4">
-                      <div className="text-xs text-white/65">Recommended</div>
-                      <div className="mt-1 text-xl font-extrabold tabular-nums">{rec ? `${rec.ml} ml` : "—"}</div>
-                      <div className="mt-1 text-sm text-white/70">
-                        {rec ? `Range: ${rec.low}–${rec.high} ml` : "Enter your weight to calculate."}
-                      </div>
-
-                      <button
-                        onClick={applyRecommendation}
-                        disabled={!rec}
-                        className="mt-4 w-full px-4 py-3 rounded-2xl border border-white/15 bg-white/8 font-extrabold disabled:opacity-40"
-                      >
-                        Use recommendation
-                      </button>
-
-                      <div className="mt-3">
-                        <div className="text-xs text-white/65">Or set your own goal (ml)</div>
-                        <input
-                          className="mt-1 w-full px-4 py-3 rounded-2xl border border-white/15 bg-white/5 font-extrabold outline-none"
-                          type="number"
-                          min={500}
-                          max={6000}
-                          step={50}
-                          value={state.goalML}
-                          onChange={(e) => setState((s) => ({ ...s, goalML: Number(e.target.value || 2000) }))}
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="mt-6 flex gap-2">
-                    <button
-                      onClick={() => setStep(0)}
-                      className="flex-1 px-4 py-4 rounded-2xl border border-white/15 bg-white/8 font-extrabold"
-                    >
-                      Back
-                    </button>
-                    <button
-                      onClick={() => setStep(2)}
-                      className="flex-1 px-4 py-4 rounded-2xl bg-[#0A84FF] font-extrabold"
-                    >
-                      Next
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* Bottle setup */}
-              {state.step === 2 && (
-                <div>
-                  <div className="text-2xl font-extrabold">Your bottle</div>
-                  <div className="mt-2 text-white/70">So you can log with one quick scroll.</div>
-
-                  <div className="mt-6 rounded-3xl border border-white/10 bg-white/6 p-5">
-                    <div className="text-xs text-white/65">Select bottle shape</div>
-                    <div className="mt-2 grid grid-cols-2 gap-2">
-                      {[
-                        { k: "tall", t: "Tall / slim" },
-                        { k: "standard", t: "Standard" },
-                        { k: "wide", t: "Wide" },
-                        { k: "tumbler", t: "Tumbler" },
-                      ].map((x) => (
-                        <button
-                          key={x.k}
-                          onClick={() => setState((s) => ({ ...s, shape: x.k }))}
-                          className={
-                            "px-3 py-3 rounded-2xl border font-extrabold " +
-                            (state.shape === x.k ? "border-[#0A84FF]/60 bg-[#0A84FF]/20" : "border-white/15 bg-white/5")
-                          }
-                        >
-                          {x.t}
-                        </button>
-                      ))}
-                    </div>
-
-                    <div className="mt-5">
-                      <div className="text-xs text-white/65">How much can the bottle hold? (ml)</div>
-                      <input
-                        className="mt-1 w-full px-4 py-3 rounded-2xl border border-white/15 bg-white/5 font-extrabold outline-none"
-                        type="number"
-                        min={100}
-                        max={2000}
-                        step={50}
-                        value={state.bottleML}
-                        onChange={(e) => setState((s) => ({ ...s, bottleML: Number(e.target.value || 500) }))}
-                      />
-                      <div className="mt-2 text-xs text-white/55">Common sizes: 500, 750, 1000 ml</div>
-                    </div>
-
-                    <div className="mt-5">
-                      <div className="text-xs text-white/65">Scroll wheel snapping</div>
-                      <div className="mt-2 grid grid-cols-3 gap-2">
-                        {[
-                          { k: "quarters", t: "Quarters" },
-                          { k: "tenths", t: "10%" },
-                          { k: "free", t: "Smooth" },
-                        ].map((x) => (
-                          <button
-                            key={x.k}
-                            onClick={() => setState((s) => ({ ...s, snap: x.k }))}
-                            className={
-                              "px-3 py-3 rounded-2xl border font-extrabold " +
-                              (state.snap === x.k ? "border-[#0A84FF]/60 bg-[#0A84FF]/20" : "border-white/15 bg-white/5")
-                            }
-                          >
-                            {x.t}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="mt-6 flex gap-2">
-                    <button
-                      onClick={() => setStep(1)}
-                      className="flex-1 px-4 py-4 rounded-2xl border border-white/15 bg-white/8 font-extrabold"
-                    >
-                      Back
-                    </button>
-                    <button onClick={() => setStep(3)} className="flex-1 px-4 py-4 rounded-2xl bg-[#0A84FF] font-extrabold">
-                      Next
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* Summary */}
-              {state.step === 3 && (
-                <div>
-                  <div className="text-2xl font-extrabold">You’re set</div>
-                  <div className="mt-2 text-white/70">Here’s your daily target in bottles.</div>
-
-                  <div className="mt-6 rounded-3xl border border-white/10 bg-white/6 p-5">
-                    <div className="text-xs text-white/65">Daily water intake</div>
-                    <div className="mt-1 text-3xl font-extrabold tabular-nums">{state.goalML} ml</div>
-
-                    <div className="mt-4 text-xs text-white/65">Your bottle</div>
-                    <div className="mt-1 text-lg font-extrabold tabular-nums">{state.bottleML} ml</div>
-
-                    <div className="mt-4 text-xs text-white/65">That’s</div>
-                    <div className="mt-1 text-3xl font-extrabold tabular-nums">{bottlesPerDayText} bottle(s)</div>
-                    <div className="mt-2 text-sm text-white/70">
-                      You can log by scrolling to match the water left in your bottle.
-                    </div>
-                  </div>
-
-                  <div className="mt-6 flex gap-2">
-                    <button
-                      onClick={() => setStep(2)}
-                      className="flex-1 px-4 py-4 rounded-2xl border border-white/15 bg-white/8 font-extrabold"
-                    >
-                      Back
-                    </button>
-                    <button
-                      onClick={() => {
-                        // start tracking fresh today
-                        setState((s) => ({
-                          ...s,
-                          hasOnboarded: true,
-                          dayKey: dayKey(),
-                          completedBottles: 0,
-                          remaining: 1,
-                          history: [],
-                          celebrate: null,
-                        }));
-                      }}
-                      className="flex-1 px-4 py-4 rounded-2xl bg-[#0A84FF] font-extrabold"
-                    >
-                      Start tracking
-                    </button>
-                  </div>
-                </div>
-              )}
             </div>
           </div>
-        );
-      }
+        )}
 
-      ReactDOM.createRoot(document.getElementById("root")).render(<WaterBottleTracker />);
-    </script>
-  </body>
-</html>
+        {/* top area */}
+        <div className="px-5 pt-7 pb-5">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-2xl font-extrabold leading-tight">How much water is in your bottle?</div>
+              <div className="mt-2 text-sm text-white/60">
+                Goal {state.goalML} ml • Bottle {state.bottleML} ml • {bottlesPerDayText} bottle(s)/day
+              </div>
+              <div className="mt-1 text-xs text-white/50">
+                Resets in <span className="font-extrabold tabular-nums text-white/70">{formatCountdown(resetMs)}</span>
+              </div>
+            </div>
+            <button
+              onClick={() => setState((s) => ({ ...s, hasOnboarded: false, step: 3 }))}
+              className="h-10 w-10 rounded-2xl border border-white/12 bg-white/8 active:bg-white/12 flex items-center justify-center"
+              aria-label="Edit setup"
+              title="Edit setup"
+            >
+              ⚙︎
+            </button>
+          </div>
+        </div>
+
+        {/* core interaction */}
+        <div className="px-5">
+          <div className="flex items-center justify-center gap-6">
+            {/* bottle (vector) */}
+            <BottleVector shape={state.shape} level={pendingRemaining} className={shapeClasses(state.shape)} />
+
+            {/* scroll wheel dial */}
+            <div className="flex flex-col items-center gap-3">
+              <div className="text-lg font-extrabold tabular-nums">{remainingPct}%</div>
+              <div
+                ref={dialRef}
+                onPointerDown={onDialPointerDown}
+                className="relative h-[260px] w-16 rounded-2xl border border-white/15 bg-white/6 overflow-hidden select-none touch-none"
+                role="slider"
+                aria-label="Bottle level"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={remainingPct}
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  const step = state.snap === "tenths" ? 0.1 : state.snap === "free" ? 0.01 : 0.25;
+                  if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    setPendingRemaining((p) => snapValue(p + step, state.snap));
+                  }
+                  if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    setPendingRemaining((p) => snapValue(p - step, state.snap));
+                  }
+                }}
+              >
+                <div className="absolute inset-y-2 left-[18px] right-[18px] rounded-xl bg-white/8" />
+                <div className="absolute inset-y-2 left-0 right-0 flex flex-col justify-between pointer-events-none">
+                  {Array.from({ length: 21 }).map((_, i) => {
+                    const major = i % 5 === 0;
+                    return (
+                      <div key={i} className="flex justify-center">
+                        <span className={`block h-px ${major ? "w-8 bg-white/45" : "w-[22px] bg-white/25"}`} />
+                      </div>
+                    );
+                  })}
+                </div>
+                <div
+                  className="absolute left-1/2 h-[6px] w-[38px] -translate-x-1/2 rounded-full bg-white/90"
+                  style={{ top: `${dialThumbTop}px` }}
+                />
+              </div>
+
+              <button
+                onClick={undo}
+                disabled={!state.history || state.history.length === 0}
+                className="px-4 py-2 rounded-2xl border border-white/15 bg-white/8 font-extrabold disabled:opacity-40"
+              >
+                Undo
+              </button>
+            </div>
+          </div>
+
+
+          {/* Track button */}
+          <div className="mt-5 flex justify-center">
+            <button
+              onClick={() => {
+                const wasEmpty = pendingRemaining <= 0.0001;
+                setRemaining(pendingRemaining, { action: "track" });
+                // Make the UI feel instant: once you finish a bottle, show a fresh full bottle.
+                if (wasEmpty) setPendingRemaining(1);
+              }}
+              disabled={Math.abs(pendingRemaining - state.remaining) < 1e-6}
+              className={
+                "w-full max-w-md px-5 py-4 rounded-2xl font-extrabold active:scale-[0.99] transition " +
+                (Math.abs(pendingRemaining - state.remaining) < 1e-6
+                  ? "bg-white/10 text-white/40 border border-white/10"
+                  : "bg-green-500 text-black")
+              }
+            >
+              Track
+            </button>
+          </div>
+
+          {/* progress bar */}
+          <div className="mt-8">
+            <div className="flex items-end justify-between">
+              <div className="text-sm text-white/70">Daily progress</div>
+              <div className="text-sm font-extrabold tabular-nums">{totalConsumed} / {state.goalML} ml</div>
+            </div>
+            <div className="mt-2 h-3 rounded-full bg-white/10 overflow-hidden">
+              <div className="h-full rounded-full bg-[#0A84FF]" style={{ width: `${Math.round(progressFrac * 100)}%`, transition: "width .15s ease" }} />
+            </div>
+            <div className="mt-2 text-xs text-white/55">
+              Tip: scroll down to 0% when you finish the bottle — it will auto-start the next one.
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Onboarding container
+  return (
+    <div className="min-h-screen bg-[#0B0B0F] text-white">
+      <div className="max-w-xl mx-auto px-5 pt-8 pb-10">
+        {/* Welcome */}
+        {state.step === 0 && (
+          <div>
+            <div className="text-3xl font-extrabold leading-tight">Welcome</div>
+            <div className="mt-3 text-white/70">
+              We’ll set your daily water target, then your bottle, so logging is one quick scroll.
+            </div>
+
+            <div className="mt-8 rounded-3xl border border-white/10 bg-white/6 p-5">
+              <div className="text-sm text-white/70">What you’ll do</div>
+              <ul className="mt-3 space-y-2 text-white/85">
+                <li>• Answer a few questions to estimate your daily intake</li>
+                <li>• Tell us your bottle size + shape</li>
+                <li>• Log bottle level with a single scroll</li>
+              </ul>
+            </div>
+
+            <button
+              onClick={() => setStep(1)}
+              className="mt-8 w-full px-4 py-4 rounded-2xl bg-[#0A84FF] font-extrabold"
+            >
+              Get started
+            </button>
+          </div>
+        )}
+
+        {/* Intake questions */}
+        {state.step === 1 && (
+          <div>
+            <div className="text-2xl font-extrabold">Your daily water target</div>
+            <div className="mt-2 text-white/70">Answer a few questions — you can edit later.</div>
+
+            <div className="mt-6 rounded-3xl border border-white/10 bg-white/6 p-5">
+              <label className="block">
+                <div className="text-xs text-white/65">Weight (kg)</div>
+                <input
+                  className="mt-1 w-full px-4 py-3 rounded-2xl border border-white/15 bg-white/5 font-extrabold outline-none"
+                  type="number"
+                  min={30}
+                  max={200}
+                  step={0.5}
+                  value={state.weightKg}
+                  onChange={(e) => setState((s) => ({ ...s, weightKg: Number(e.target.value || 70) }))}
+                />
+              </label>
+
+              <div className="mt-4">
+                <div className="text-xs text-white/65">Activity</div>
+                <div className="mt-2 grid grid-cols-3 gap-2">
+                  {[
+                    { k: "low", t: "Low" },
+                    { k: "moderate", t: "Moderate" },
+                    { k: "high", t: "High" },
+                  ].map((x) => (
+                    <button
+                      key={x.k}
+                      onClick={() => setState((s) => ({ ...s, activity: x.k }))}
+                      className={
+                        "px-3 py-3 rounded-2xl border font-extrabold " +
+                        (state.activity === x.k
+                          ? "border-[#0A84FF]/60 bg-[#0A84FF]/20"
+                          : "border-white/15 bg-white/5")
+                      }
+                    >
+                      {x.t}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="mt-4 flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
+                <div>
+                  <div className="font-extrabold">Warm climate / sweaty day</div>
+                  <div className="text-xs text-white/60">Adds a small buffer to the estimate</div>
+                </div>
+                <button
+                  onClick={() => setState((s) => ({ ...s, warm: !s.warm }))}
+                  className={
+                    "h-8 w-14 rounded-full p-1 transition " +
+                    (state.warm ? "bg-[#0A84FF]" : "bg-white/15")
+                  }
+                  aria-label="Toggle warm climate"
+                >
+                  <div
+                    className={
+                      "h-6 w-6 rounded-full bg-white transition " +
+                      (state.warm ? "translate-x-6" : "translate-x-0")
+                    }
+                  />
+                </button>
+              </div>
+
+              <div className="mt-5 rounded-2xl border border-white/10 bg-white/5 p-4">
+                <div className="text-xs text-white/65">Recommended</div>
+                <div className="mt-1 text-xl font-extrabold tabular-nums">
+                  {rec ? `${rec.ml} ml` : "—"}
+                </div>
+                <div className="mt-1 text-sm text-white/70">
+                  {rec ? `Range: ${rec.low}–${rec.high} ml` : "Enter your weight to calculate."}
+                </div>
+
+                <button
+                  onClick={applyRecommendation}
+                  disabled={!rec}
+                  className="mt-4 w-full px-4 py-3 rounded-2xl border border-white/15 bg-white/8 font-extrabold disabled:opacity-40"
+                >
+                  Use recommendation
+                </button>
+
+                <div className="mt-3">
+                  <div className="text-xs text-white/65">Or set your own goal (ml)</div>
+                  <input
+                    className="mt-1 w-full px-4 py-3 rounded-2xl border border-white/15 bg-white/5 font-extrabold outline-none"
+                    type="number"
+                    min={500}
+                    max={6000}
+                    step={50}
+                    value={state.goalML}
+                    onChange={(e) => setState((s) => ({ ...s, goalML: Number(e.target.value || 2000) }))}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-6 flex gap-2">
+              <button
+                onClick={() => setStep(0)}
+                className="flex-1 px-4 py-4 rounded-2xl border border-white/15 bg-white/8 font-extrabold"
+              >
+                Back
+              </button>
+              <button
+                onClick={() => setStep(2)}
+                className="flex-1 px-4 py-4 rounded-2xl bg-[#0A84FF] font-extrabold"
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Bottle setup */}
+        {state.step === 2 && (
+          <div>
+            <div className="text-2xl font-extrabold">Your bottle</div>
+            <div className="mt-2 text-white/70">So you can log with one quick scroll.</div>
+
+            <div className="mt-6 rounded-3xl border border-white/10 bg-white/6 p-5">
+              <div className="text-xs text-white/65">Select bottle shape</div>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                {[
+                  { k: "tall", t: "Tall / slim" },
+                  { k: "standard", t: "Standard" },
+                  { k: "wide", t: "Wide" },
+                  { k: "tumbler", t: "Tumbler" },
+                ].map((x) => (
+                  <button
+                    key={x.k}
+                    onClick={() => setState((s) => ({ ...s, shape: x.k }))}
+                    className={
+                      "px-3 py-3 rounded-2xl border font-extrabold " +
+                      (state.shape === x.k
+                        ? "border-[#0A84FF]/60 bg-[#0A84FF]/20"
+                        : "border-white/15 bg-white/5")
+                    }
+                  >
+                    {x.t}
+                  </button>
+                ))}
+              </div>
+
+              <div className="mt-5">
+                <div className="text-xs text-white/65">How much can the bottle hold? (ml)</div>
+                <input
+                  className="mt-1 w-full px-4 py-3 rounded-2xl border border-white/15 bg-white/5 font-extrabold outline-none"
+                  type="number"
+                  min={100}
+                  max={2000}
+                  step={50}
+                  value={state.bottleML}
+                  onChange={(e) => setState((s) => ({ ...s, bottleML: Number(e.target.value || 500) }))}
+                />
+                <div className="mt-2 text-xs text-white/55">
+                  Common sizes: 500, 750, 1000 ml
+                </div>
+              </div>
+
+              <div className="mt-5">
+                <div className="text-xs text-white/65">Scroll wheel snapping</div>
+                <div className="mt-2 grid grid-cols-3 gap-2">
+                  {[
+                    { k: "quarters", t: "Quarters" },
+                    { k: "tenths", t: "10%" },
+                    { k: "free", t: "Smooth" },
+                  ].map((x) => (
+                    <button
+                      key={x.k}
+                      onClick={() => setState((s) => ({ ...s, snap: x.k }))}
+                      className={
+                        "px-3 py-3 rounded-2xl border font-extrabold " +
+                        (state.snap === x.k
+                          ? "border-[#0A84FF]/60 bg-[#0A84FF]/20"
+                          : "border-white/15 bg-white/5")
+                      }
+                    >
+                      {x.t}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-6 flex gap-2">
+              <button
+                onClick={() => setStep(1)}
+                className="flex-1 px-4 py-4 rounded-2xl border border-white/15 bg-white/8 font-extrabold"
+              >
+                Back
+              </button>
+              <button
+                onClick={() => setStep(3)}
+                className="flex-1 px-4 py-4 rounded-2xl bg-[#0A84FF] font-extrabold"
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Summary */}
+        {state.step === 3 && (
+          <div>
+            <div className="text-2xl font-extrabold">You’re set</div>
+            <div className="mt-2 text-white/70">Here’s your daily target in bottles.</div>
+
+            <div className="mt-6 rounded-3xl border border-white/10 bg-white/6 p-5">
+              <div className="text-xs text-white/65">Daily water intake</div>
+              <div className="mt-1 text-3xl font-extrabold tabular-nums">{state.goalML} ml</div>
+
+              <div className="mt-4 text-xs text-white/65">Your bottle</div>
+              <div className="mt-1 text-lg font-extrabold tabular-nums">{state.bottleML} ml</div>
+
+              <div className="mt-4 text-xs text-white/65">That’s</div>
+              <div className="mt-1 text-3xl font-extrabold tabular-nums">{bottlesPerDayText} bottle(s)</div>
+              <div className="mt-2 text-sm text-white/70">
+                You can log by scrolling to match the water left in your bottle.
+              </div>
+            </div>
+
+            <div className="mt-6 flex gap-2">
+              <button
+                onClick={() => setStep(2)}
+                className="flex-1 px-4 py-4 rounded-2xl border border-white/15 bg-white/8 font-extrabold"
+              >
+                Back
+              </button>
+              <button
+                onClick={() => {
+                  // start tracking fresh today
+                  setState((s) => ({
+                    ...s,
+                    hasOnboarded: true,
+                    dayKey: dayKey(),
+                    completedBottles: 0,
+                    remaining: 1,
+                    history: [],
+                    celebrate: null,
+                  }));
+                }}
+                className="flex-1 px-4 py-4 rounded-2xl bg-[#0A84FF] font-extrabold"
+              >
+                Start tracking
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
