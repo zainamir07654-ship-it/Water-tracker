@@ -629,7 +629,6 @@ function OnboardingIntro4({ onContinue, onSkip, onStartOver }: IntroProps) {
 function runSelfTests() {
   // Enable by setting window.__WBT_TESTS__ = true in the console.
   if (typeof window === "undefined") return;
-  // @ts-expect-error - dev flag
   if (!(window as any).__WBT_TESTS__) return;
 
   console.assert(dayKey(new Date("2025-01-02T10:00:00Z")) === "2025-01-02", "dayKey should format YYYY-MM-DD");
